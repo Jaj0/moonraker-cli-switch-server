@@ -1,48 +1,40 @@
-# klipper-moonraker-tapo
-How to control a Tapo Smart Plug via Moonraker
+# moonraker-cli-switch-server
+How to control power switch using cli command
 
 
 
 ![image](https://github.com/user-attachments/assets/5460d8dd-af88-4082-9ab7-d90816550691)
 ![PrinterTurnOn](https://github.com/user-attachments/assets/8f0fbed1-637a-4e19-8a59-028b1c947fa2)
 
-👎 There's no proper support for Tapo smart plugs in Moonraker, the only solution I've seen wanted me to install Home Assistant which feels a bit much. 
-
-👎 There is a Python library for controlling Tapo smart plugs which is extremely easy to use and works well, however somehow Moonraker does not allow running arbitrary script on its host, or I couldn't find a way to do it, which is quite bizarre. 
+👎 There's no way to run cli command to switch on/off custom power supply device through moonraker (yet, but i've raised feature request: https://github.com/Arksine/moonraker/issues/932).
 
 👎 Klipper can run macros, but these only run if the MCU is connected, which requires the power to be on in the first place. 
 
-🍀 Luckily the `power` section of Moonraker's config allows arbitrary http requests (even if `type: http` is, confusingly, not explicitly called out as supported in the documentation), a Python script with a tiny HTTP server attached can be used to control the smart plug, creating the following abomination:
+🍀 Luckily the `power` section of Moonraker's config allows arbitrary http requests (even if `type: http` is, confusingly, not explicitly called out as supported in the documentation), a Python script with a tiny HTTP server attached can be used to send correct shell commands:
 
-![image](https://github.com/mainde/klipper-moonraker-tapo/assets/14027750/53c66c34-07c6-4b11-ad28-6f5695ebb6e8)
+![image](https://github.com/user-attachments/assets/ff50eb1b-3b45-495c-bbfc-686ae7c7abf2)
 
 # Here's how:
-1. Install the Python package "PyP100", specifically this fork https://github.com/almottier/TapoP100 because https://pypi.org/project/PyP100/ is unmaintained and does not work anymore due to changes to the Tapo authentication mechanism.
-   
-   `pip3 install git+https://github.com/almottier/TapoP100.git@main`
-2. Save this script somewhere, for example `/home/pi/tapo/server.py`, then edit the `TAPO_ADDRESS`, `TAPO_USERNAME`, `TAPO_PASSWORD` fields appropriately.
+1. Save this script somewhere, for example `/home/pi/switch/server.py`, then edit the `ON_COMMAND`, `OFF_COMMAND`, `STATUS_COMMAND` fields appropriately. Also rework parsing of `STATUS_COMMAND` return value to match 'on'/'off' status value.
 
-⚠ **Note:** this is the code for the `P110`, you'll probably need to read the PyP100 docs and change a couple of lines if your plug is not the same.
+⚠ **Note:** this is the code for the custiom gpio library for NanoPi Neo Air ([WiringNP](https://github.com/friendlyarm/WiringNP)).
   ```python3
   #!/usr/bin/python3
   
   import json
   import signal
   from http.server import SimpleHTTPRequestHandler, HTTPServer
-  from PyP100 import PyP110
+  import subprocess
   
-  TAPO_ADDRESS = "192.168.x.x"
-  TAPO_USERNAME = "your.email@address"
-  TAPO_PASSWORD = "hunter2"
-  
-  p100 = PyP110.P110(TAPO_ADDRESS, TAPO_USERNAME, TAPO_PASSWORD)
-  p100.handshake()
-  p100.login()
+  # Align those commands to your usecase
+  ON_COMMAND = "gpio mode 7 output; gpio write 7 1"
+  OFF_COMMAND = "gpio write 7 0"
+  STATUS_COMMAND = "gpio read 7"
   
   running = True
   
   def exit_gracefully(*args, **kwargs):
-      print("Terminating..")
+      print("Terminating...")
       global running
       running = False
   
@@ -56,24 +48,19 @@ How to control a Tapo Smart Plug via Moonraker
            self.send_response(200)
            self.send_header('Content-type', 'application/json')
            self.end_headers()
-
-           global p100  # hack to fight Tapo session expiry, somehow just redoing handhsake and login doesn't work
-           try:
-               if self.path == "/on":
-                   p100.turnOn()
-               elif self.path == "/off":
-                   p100.turnOff()
-               self.wfile.write(json.dumps(p100.getDeviceInfo()).encode("utf-8"))
-           except Exception as e:  # YOLO
-               p100 = PyP110.P110(TAPO_ADDRESS, TAPO_USERNAME, TAPO_PASSWORD)
-               p100.handshake()
-               p100.login()
-               if self.path == "/on":
-                   p100.turnOn()
-               elif self.path == "/off":
-                   p100.turnOff()
-               self.wfile.write(json.dumps(p100.getDeviceInfo()).encode("utf-8"))
-           return
+  
+           if self.path == "/on":
+               # using shell=True allows us to send multiple commands separated by ;
+               subprocess.run(ON_COMMAND, shell=True)
+           elif self.path == "/off":
+               subprocess.run(OFF_COMMAND, shell=True)
+           ret = subprocess.run(STATUS_COMMAND, capture_output=True, shell=True)
+           # rework this part to align it to output of your command
+           # it should return 'on' or 'off' for key 'status' in return dictionary 
+           status = ret.stdout.decode().strip()
+           status = 'on' if status == '1' else 'off'
+           # send reponse with switch status
+           self.wfile.write(json.dumps({'status': status}).encode("utf-8"))
   
   
   if __name__ == '__main__':
@@ -91,11 +78,11 @@ How to control a Tapo Smart Plug via Moonraker
       except KeyboardInterrupt:
           pass
   ```
-3. Make the script executable `chmod +x /home/pi/tapo/server.py`.
-4. Make the script autostart, create a service with your editor of choice, e.g. `sudo nano /etc/systemd/system/tapo.service`
+2. Make the script executable `chmod +x /home/pi/switch/server.py`.
+3. Make the script autostart, create a service with your editor of choice, e.g. `sudo nano /etc/systemd/system/switch.service`
   ```
   [Unit]
-  Description=Tapo HTTP server
+  Description=CLI Switch server
   Wants=network.target
   After=network.target
   
@@ -103,14 +90,14 @@ How to control a Tapo Smart Plug via Moonraker
   User=pi
   Group=pi
   ExecStartPre=/bin/sleep 10
-  ExecStart=/home/pi/tapo/server.py
+  ExecStart=/home/pi/switch/server.py
   Restart=always
   
   [Install]
   WantedBy=multi-user.target
  ```
-5. Start your service `service tapo start`, if something goes wrong you can check status `service tapo status` and logs `journalctl -u tapo`. Then enable it so it autostarts `systemctl enable tapo.service`
-6. Open in Mainsail/Fluidd your `Moonraker.cfg`, add this at the end (and maybe customise the device name just after "power"):
+4. Start your service `service switch start`, if something goes wrong you can check status `service switch status` and logs `journalctl -u switch`. Then enable it so it autostarts `systemctl enable switch.service`
+5. Open in Mainsail/Fluidd your `Moonraker.cfg`, add this at the end (and maybe customise the device name just after "power"):
 ```
 [power printer]
 type: http
@@ -119,19 +106,15 @@ off_url: http://localhost:56427/off
 status_url: http://localhost:56427/
 response_template:
   {% set resp = http_request.last_response().json() %}
-  {% if resp["device_on"] %}
-    {"on"}
-  {% else %}
-    {"off"}
-  {% endif %}
+  {resp["status"]}
 bound_services: klipper
 ```
-7. Restart Moonraker and that should be all.
+6. Restart Moonraker and that should be all.
 
 Optional goodies for `Moonraker.cfg`, to add below `[power printer]`
 ```
 off_when_shutdown: True
-locked_while_printing: False
+locked_while_printing: True
 restart_klipper_when_powered: True
 on_when_job_queued: True
 ```
@@ -167,3 +150,4 @@ gcode:
   TURN_OFF_HEATERS
   M81
 ```
+Thanks to user https://github.com/mainde for original idea on which i've based my solution!
