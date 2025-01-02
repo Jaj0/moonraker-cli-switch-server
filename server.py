@@ -3,20 +3,17 @@
 import json
 import signal
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-from PyP100 import PyP110
+import subprocess
 
-TAPO_ADDRESS = "192.168.x.x"
-TAPO_USERNAME = "your.email@address"
-TAPO_PASSWORD = "hunter2"
-
-p100 = PyP110.P110(TAPO_ADDRESS, TAPO_USERNAME, TAPO_PASSWORD)
-p100.handshake()
-p100.login()
+# Align those commands to your usecase
+ON_COMMAND = "gpio mode 7 output; gpio write 7 1"
+OFF_COMMAND = "gpio write 7 0"
+STATUS_COMMAND = "gpio read 7"
 
 running = True
 
 def exit_gracefully(*args, **kwargs):
-    print("Terminating..")
+    print("Terminating...")
     global running
     running = False
 
@@ -31,23 +28,18 @@ class MyHttpRequestHandler(SimpleHTTPRequestHandler):
          self.send_header('Content-type', 'application/json')
          self.end_headers()
 
-         global p100  # hack to fight Tapo session expiry, somehow just redoing handhsake and login doesn't work
-         try:
-             if self.path == "/on":
-                 p100.turnOn()
-             elif self.path == "/off":
-                 p100.turnOff()
-             self.wfile.write(json.dumps(p100.getDeviceInfo()).encode("utf-8"))
-         except Exception as e:  # YOLO
-             p100 = PyP110.P110(TAPO_ADDRESS, TAPO_USERNAME, TAPO_PASSWORD)
-             p100.handshake()
-             p100.login()
-             if self.path == "/on":
-                 p100.turnOn()
-             elif self.path == "/off":
-                 p100.turnOff()
-             self.wfile.write(json.dumps(p100.getDeviceInfo()).encode("utf-8"))
-         return
+         if self.path == "/on":
+             # using shell=True allows us to send multiple commands separated by ;
+             subprocess.run(ON_COMMAND, shell=True)
+         elif self.path == "/off":
+             subprocess.run(OFF_COMMAND, shell=True)
+         ret = subprocess.run(STATUS_COMMAND, capture_output=True, shell=True)
+         # rework this part to align it to output of your command
+         # it should return 'on' or 'off' for key 'status' in return dictionary 
+         status = ret.stdout.decode().strip()
+         status = 'on' if status == '1' else 'off'
+         # send reponse with switch status
+         self.wfile.write(json.dumps({'status': status}).encode("utf-8"))
 
 
 if __name__ == '__main__':
