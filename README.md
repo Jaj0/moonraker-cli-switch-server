@@ -96,7 +96,7 @@ How to control power switch using cli command
   [Install]
   WantedBy=multi-user.target
  ```
-4. Start your service `service switch start`, if something goes wrong you can check status `service switch status` and logs `journalctl -u switch`. Then enable it so it autostarts `systemctl enable switch.service`
+4. Start your service by calling `sudo systemctl daemon-reload` then `sudo systemctl start switch`, if something goes wrong you can check status `sudo systemctl status switch` and logs `journalctl -u switch`. Then enable it so it autostarts `sudo systemctl enable switch`
 5. Open in Mainsail/Fluidd your `Moonraker.cfg`, add this at the end (and maybe customise the device name just after "power"):
 ```
 [power printer]
